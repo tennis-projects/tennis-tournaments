@@ -1,0 +1,117 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Unbounded', 'Manrope', ui-sans-serif, sans-serif;
+
+  --color-court-50: #f1f7f2;
+  --color-court-100: #dcecdf;
+  --color-court-200: #b9d9c0;
+  --color-court-500: #2f7a45;
+  --color-court-600: #1f6435;
+  --color-court-700: #17502a;
+  --color-court-900: #0d2e18;
+
+  --color-clay-100: #fbe9df;
+  --color-clay-400: #e58a5c;
+  --color-clay-500: #d2693a;
+  --color-clay-600: #b2532a;
+
+  --color-ball: #d7ef3c;
+  --color-paper: #f7f5ef;
+  --color-ink: #1b2420;
+  --color-muted: #65716b;
+  --color-line: #e3e1d8;
+}
+
+html {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* компактные числовые поля счёта без стрелочек */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
+@utility card {
+  background: #fff;
+  border: 1px solid var(--color-line);
+  border-radius: 1rem;
+}
+
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-radius: 0.75rem;
+  padding: 0.55rem 1rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: background-color 0.15s, opacity 0.15s;
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+@utility btn-primary {
+  background: var(--color-court-700);
+  color: #fff;
+  &:hover:not(:disabled) {
+    background: var(--color-court-900);
+  }
+}
+
+@utility btn-ghost {
+  background: transparent;
+  color: var(--color-court-700);
+  border: 1px solid var(--color-line);
+  &:hover:not(:disabled) {
+    background: var(--color-court-50);
+  }
+}
+
+@utility btn-danger {
+  background: transparent;
+  color: var(--color-clay-600);
+  border: 1px solid var(--color-clay-100);
+  &:hover:not(:disabled) {
+    background: var(--color-clay-100);
+  }
+}
+
+@utility field {
+  width: 100%;
+  border: 1px solid var(--color-line);
+  background: #fff;
+  border-radius: 0.75rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.95rem;
+  &:focus {
+    outline: 2px solid var(--color-court-500);
+    outline-offset: 0;
+    border-color: transparent;
+  }
+}
+
+@utility label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted);
+  margin-bottom: 0.3rem;
+}
