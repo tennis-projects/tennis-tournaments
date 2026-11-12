@@ -1,10 +1,11 @@
 import { Link, useParams } from 'react-router';
 import { formatDate } from '../components/StatusBadge';
 import { useData } from '../hooks/data';
-import { resolvePlayoff, PLAYOFF_LABELS } from '../lib/playoff';
+import { resolveBracket, roundName } from '../lib/playoff';
 import { finalPlacings, playerRecord, pointsForPlace, tournamentPlayerIds } from '../lib/results';
-import { isPlayed, sortedMatches, winnerSide } from '../lib/standings';
-import type { Tournament } from '../types';
+import { formatSets, matchState } from '../lib/score';
+import { sortedMatches } from '../lib/standings';
+import type { BestOf, SetScore, Tournament } from '../types';
 
 export default function PlayerPage() {
   const { id = '' } = useParams();
@@ -60,7 +61,7 @@ export default function PlayerPage() {
               <div className="flex-1 min-w-0">
                 <div className="font-semibold truncate">{t.name}</div>
                 <div className="text-xs text-muted">
-                  {formatDate(t.date)} · {rec.wins}–{rec.losses} · геймы {rec.gamesFor}–{rec.gamesAgainst}
+                  {formatDate(t.date)} · матчи {rec.wins}–{rec.losses} · сеты {rec.setsFor}–{rec.setsAgainst}
                   {done && place ? ` · +${pointsForPlace(place)} очк.` : ' · идёт'}
                 </div>
               </div>
@@ -70,14 +71,26 @@ export default function PlayerPage() {
               {sortedMatches(t)
                 .filter((m) => m.p1 === id || m.p2 === id)
                 .map((m) => (
-                  <MatchLine key={m.id} label={`Гр. ${m.group}`} me={id} p1={m.p1} p2={m.p2} g1={m.g1} g2={m.g2} nm={(x) => nm(t, x)} />
+                  <MatchLine key={m.id} label={`Группа ${m.group}`} me={id} p1={m.p1} p2={m.p2} sets={m.sets} bestOf={t.bestOf} nm={(x) => nm(t, x)} />
                 ))}
-              {t.playoff &&
-                Object.values(resolvePlayoff(t.playoff))
-                  .filter((m) => m.p1 === id || m.p2 === id)
+              {(() => {
+                const b = resolveBracket(t);
+                if (!b) return null;
+                return [...b.rounds.flat(), ...(b.third ? [b.third] : [])]
+                  .filter((m) => m.p1 && m.p2 && (m.p1 === id || m.p2 === id))
                   .map((m) => (
-                    <MatchLine key={m.slot} label={PLAYOFF_LABELS[m.slot]} me={id} p1={m.p1} p2={m.p2} g1={m.g1} g2={m.g2} nm={(x) => nm(t, x)} />
-                  ))}
+                    <MatchLine
+                      key={m.id}
+                      label={m.isThird ? 'За 3 место' : roundName(m.round, b.rounds.length)}
+                      me={id}
+                      p1={m.p1}
+                      p2={m.p2}
+                      sets={m.sets}
+                      bestOf={t.bestOf}
+                      nm={(x) => nm(t, x)}
+                    />
+                  ));
+              })()}
               <Link to={`/t/${t.id}`} className="inline-block mt-2 text-court-600 hover:underline">
                 Открыть турнир →
               </Link>
@@ -103,26 +116,25 @@ function MatchLine(props: {
   me: string;
   p1: string | null;
   p2: string | null;
-  g1: number | null;
-  g2: number | null;
+  sets: SetScore[];
+  bestOf: BestOf;
   nm: (id: string | null) => string;
 }) {
-  const { label, me, p1, p2, g1, g2, nm } = props;
+  const { label, me, p1, p2, sets, bestOf, nm } = props;
   const meFirst = p1 === me;
   const opp = meFirst ? p2 : p1;
-  const played = isPlayed({ g1, g2 });
-  const w = winnerSide({ g1, g2 });
-  const won = played && ((w === 1 && meFirst) || (w === 2 && !meFirst));
-  const my = meFirst ? g1 : g2;
-  const their = meFirst ? g2 : g1;
+  const st = matchState(sets, bestOf);
+  const won = st.complete && (st.winner === 1) === meFirst;
   return (
     <div className="flex items-center gap-2 py-1.5 border-t border-line">
       <span className="text-[11px] text-muted w-24 shrink-0 truncate">{label}</span>
       <span className="flex-1 truncate">vs {nm(opp)}</span>
-      {played ? (
-        <span className={`font-bold tabular-nums ${won ? 'text-court-600' : 'text-clay-600'}`}>
-          {won ? 'В' : 'П'} {my}:{their}
+      {st.complete ? (
+        <span className={`font-bold tabular-nums whitespace-nowrap ${won ? 'text-court-600' : 'text-clay-600'}`}>
+          {won ? 'В' : 'П'} {formatSets(sets, !meFirst)}
         </span>
+      ) : st.started ? (
+        <span className="tabular-nums text-clay-600 whitespace-nowrap">{formatSets(sets, !meFirst)} …</span>
       ) : (
         <span className="text-muted">—</span>
       )}

@@ -2,6 +2,7 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import { collection, doc, getDoc, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { auth, db, firebaseConfigured } from '../firebase';
+import { normalizeTournament } from '../lib/normalize';
 import type { Player, Tournament } from '../types';
 
 interface DataState {
@@ -71,7 +72,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     const unT = onSnapshot(
       query(collection(db, 'tournaments'), orderBy('date', 'desc')),
       (s) => {
-        setTournaments(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Tournament, 'id'>) })));
+        setTournaments(s.docs.map((d) => normalizeTournament(d.id, d.data())));
         setLoaded((l) => ({ ...l, t: true }));
       },
       onErr,

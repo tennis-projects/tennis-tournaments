@@ -1,5 +1,5 @@
-export type GroupKey = 'A' | 'B' | 'C';
-export const GROUP_KEYS: GroupKey[] = ['A', 'B', 'C'];
+export type GroupKey = 'A' | 'B' | 'C' | 'D';
+export const GROUP_KEYS: GroupKey[] = ['A', 'B', 'C', 'D'];
 
 export interface Player {
   id: string;
@@ -8,35 +8,35 @@ export interface Player {
   createdAt?: number;
 }
 
-/** Счёт матча в геймах. null = матч ещё не сыгран. */
-export interface Score {
-  g1: number | null;
-  g2: number | null;
+/** Счёт одного сета: a — геймы первого игрока, b — второго. */
+export interface SetScore {
+  a: number;
+  b: number;
 }
 
-export interface GroupMatch extends Score {
+/** 1 = матч из одного сета, 3 = до двух побед в сетах (максимум 3 сета). */
+export type BestOf = 1 | 3;
+
+export interface GroupMatch {
   id: string; // M001, M002…
   group: GroupKey;
   p1: string; // id игрока
   p2: string;
   order: number;
+  sets: SetScore[];
 }
 
-export type PlayoffSlot = 'SF1' | 'SF2' | 'THIRD' | 'FINAL';
-
-/** Что хранится в базе: участники полуфиналов фиксируются при старте плей-офф,
- *  участники финала и матча за 3 место вычисляются из результатов полуфиналов. */
+/**
+ * Сетка плей-офф.
+ * slots — участники первого круга по порядку (null = BYE), длина = size (2, 4, 8, 16).
+ * matches — счёт матчей: ключи `r{круг}m{номер}` (с 1 и 0) и `third` (за 3 место).
+ * Участники второго и следующих кругов не хранятся — они вычисляются из результатов.
+ */
 export interface StoredPlayoff {
-  SF1: Score & { p1: string; p2: string };
-  SF2: Score & { p1: string; p2: string };
-  THIRD: Score;
-  FINAL: Score;
-}
-
-export interface PlayoffMatch extends Score {
-  slot: PlayoffSlot;
-  p1: string | null;
-  p2: string | null;
+  size: number;
+  slots: (string | null)[];
+  matches: Record<string, { sets: SetScore[] }>;
+  thirdPlace: boolean;
 }
 
 export type TournamentStatus = 'groups' | 'playoff' | 'finished';
@@ -45,12 +45,19 @@ export interface Tournament {
   id: string;
   name: string;
   date: string; // YYYY-MM-DD
-  season: string; // например «2026» или «2026/27»
+  season: string;
   status: TournamentStatus;
+  bestOf: BestOf;
+  /** сколько игроков выходит в плей-офф; 0 = без плей-офф */
+  playoffSize: number;
+  /** играть ли матч за 3 место */
+  thirdPlace: boolean;
   groups: Partial<Record<GroupKey, string[]>>;
   matches: Record<string, GroupMatch>;
   playoff: StoredPlayoff | null;
   /** Имена на момент турнира — чтобы история не ломалась при переименовании игрока */
   playerNames: Record<string, string>;
   createdAt: number;
+  /** служебное: плей-офф сохранён в старом формате (до сеток) и при записи будет переписан целиком */
+  legacyPlayoff?: boolean;
 }

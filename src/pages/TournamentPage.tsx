@@ -1,17 +1,23 @@
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import * as api from '../api';
+import Bracket from '../components/Bracket';
 import GroupTable from '../components/GroupTable';
 import { Notice } from '../components/Layout';
-import MatchRow from '../components/MatchRow';
+import MatchDialog from '../components/MatchDialog';
+import MatchLines, { StatusPill } from '../components/MatchLines';
+import PlayoffSizeSelect from '../components/PlayoffSizeSelect';
 import StatusBadge, { formatDate } from '../components/StatusBadge';
 import { useData, useNameOf } from '../hooks/data';
-import { PLAYOFF_LABELS, resolvePlayoff, seedSemifinals } from '../lib/playoff';
-import { finalPlacings, playerRecord, pointsForPlace } from '../lib/results';
-import { activeGroups, allGroupMatchesPlayed, allStandings, isPlayed, sortedMatches } from '../lib/standings';
-import type { PlayoffSlot, Tournament } from '../types';
+import { bracketDone, qualifiers, resolveBracket, roundName, seedBracket } from '../lib/playoff';
+import { finalPlacings, playerRecord, pointsForPlace, tournamentPlayerIds } from '../lib/results';
+import { BEST_OF_LABEL, matchState } from '../lib/score';
+import { activeGroups, allGroupMatchesPlayed, allStandings, sortedMatches } from '../lib/standings';
+import type { BestOf, Tournament } from '../types';
 
 type Tab = 'groups' | 'matches' | 'playoff' | 'results';
+type Open = { kind: 'group' | 'playoff'; id: string } | null;
+type NameFn = (id: string | null | undefined) => string;
 
 export default function TournamentPage() {
   const { id } = useParams();
@@ -33,9 +39,9 @@ export default function TournamentPage() {
 function TournamentView({ t }: { t: Tournament }) {
   const { isAdmin } = useData();
   const name = useNameOf(t);
-  const groups = activeGroups(t);
-  const hasPlayoff = groups.length >= 2;
+  const hasPlayoff = t.playoffSize >= 2;
   const [tab, setTab] = useState<Tab>(t.status === 'finished' ? 'results' : t.status === 'playoff' ? 'playoff' : 'groups');
+  const [open, setOpen] = useState<Open>(null);
   const canEdit = isAdmin && t.status !== 'finished';
 
   const tabs: [Tab, string][] = [
@@ -50,12 +56,12 @@ function TournamentView({ t }: { t: Tournament }) {
       <Link to="/" className="text-sm text-muted hover:text-ink">
         ← Все турниры
       </Link>
-      <div className="mt-2 mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="font-display text-2xl font-bold leading-tight">{t.name}</h1>
-          <div className="text-sm text-muted mt-1 flex flex-wrap items-center gap-2">
-            {formatDate(t.date)} · сезон {t.season} <StatusBadge status={t.status} />
-          </div>
+      <div className="mt-2 mb-5">
+        <h1 className="font-display text-2xl font-bold leading-tight">{t.name}</h1>
+        <div className="text-sm text-muted mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+          {formatDate(t.date)} · сезон {t.season} · {BEST_OF_LABEL[t.bestOf]}
+          {hasPlayoff && ` · в плей-офф ${t.playoffSize}`}
+          <StatusBadge status={t.status} />
         </div>
       </div>
 
@@ -75,67 +81,123 @@ function TournamentView({ t }: { t: Tournament }) {
         ))}
       </div>
 
-      {tab === 'groups' && <GroupsTab t={t} name={name} />}
-      {tab === 'matches' && <MatchesTab t={t} name={name} editable={canEdit && t.status === 'groups'} />}
-      {tab === 'playoff' && <PlayoffTab t={t} name={name} editable={canEdit} />}
+      {tab === 'groups' && <GroupsTab t={t} name={name} onOpen={(id) => setOpen({ kind: 'group', id })} />}
+      {tab === 'matches' && <MatchesTab t={t} name={name} onOpen={(id) => setOpen({ kind: 'group', id })} />}
+      {tab === 'playoff' && <PlayoffTab t={t} name={name} onOpen={(id) => setOpen({ kind: 'playoff', id })} />}
       {tab === 'results' && <ResultsTab t={t} name={name} />}
 
-      {canEdit && t.status === 'playoff' && tab === 'matches' && (
-        <p className="text-xs text-muted mt-3">
-          Счёт групповых матчей заблокирован, пока идёт плей-офф. Чтобы исправить его, отмените плей-офф в «Управлении турниром» выше.
-        </p>
-      )}
+      {open?.kind === 'group' && <GroupMatchDialog t={t} id={open.id} name={name} canEdit={canEdit} onClose={() => setOpen(null)} />}
+      {open?.kind === 'playoff' && <PlayoffMatchDialog t={t} id={open.id} name={name} canEdit={canEdit} onClose={() => setOpen(null)} />}
     </div>
   );
 }
 
-type NameFn = (id: string | null | undefined) => string;
+// ── Диалоги матчей ──────────────────────────────────────────
+function GroupMatchDialog({ t, id, name, canEdit, onClose }: { t: Tournament; id: string; name: NameFn; canEdit: boolean; onClose: () => void }) {
+  const m = t.matches[id];
+  if (!m) return null;
+  const editable = canEdit && t.status === 'groups';
+  return (
+    <MatchDialog
+      title={`Группа ${m.group}`}
+      subtitle={t.name}
+      p1={m.p1}
+      p2={m.p2}
+      name={name}
+      sets={m.sets}
+      bestOf={t.bestOf}
+      editable={editable}
+      lockedReason={
+        canEdit && t.status === 'playoff' ? 'Групповой этап закрыт, идёт плей-офф. Чтобы исправить счёт, отмените плей-офф.' : undefined
+      }
+      onSave={(sets) => api.setGroupScore(t.id, id, sets)}
+      onClose={onClose}
+    />
+  );
+}
 
-function GroupsTab({ t, name }: { t: Tournament; name: NameFn }) {
+function PlayoffMatchDialog({ t, id, name, canEdit, onClose }: { t: Tournament; id: string; name: NameFn; canEdit: boolean; onClose: () => void }) {
+  const b = resolveBracket(t);
+  const m = b && [...b.rounds.flat(), ...(b.third ? [b.third] : [])].find((x) => x.id === id);
+  if (!b || !m) return null;
+  return (
+    <MatchDialog
+      title={m.isThird ? 'Матч за 3 место' : roundName(m.round, b.rounds.length)}
+      subtitle={t.name}
+      p1={m.p1}
+      p2={m.p2}
+      name={name}
+      sets={m.sets}
+      bestOf={t.bestOf}
+      editable={canEdit && t.status === 'playoff'}
+      onSave={(sets) => api.setPlayoffScore(t, id, sets)}
+      confirmText={(sets) => {
+        const reset = api.playoffMatchesToReset(t, id, sets);
+        return reset.length
+          ? `Победитель матча меняется. Счёт следующих матчей (${reset.length}) будет сброшен, их нужно будет ввести заново. Продолжить?`
+          : null;
+      }}
+      onClose={onClose}
+    />
+  );
+}
+
+// ── Вкладки ─────────────────────────────────────────────────
+function GroupsTab({ t, name, onOpen }: { t: Tournament; name: NameFn; onOpen: (id: string) => void }) {
   const st = allStandings(t);
   const groups = activeGroups(t);
-  const qualify = groups.length === 2 ? 2 : groups.length === 3 ? 1 : 0;
+  const q = new Set(t.playoffSize >= 2 ? qualifiers(t).map((r) => r.playerId) : []);
+  const matches = Object.values(t.matches);
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    <div className="space-y-4">
       {groups.map((g) => (
-        <GroupTable key={g} group={g} rows={st[g]} name={name} qualifyCount={qualify} />
+        <GroupTable
+          key={g}
+          group={g}
+          order={t.groups[g] ?? []}
+          rows={st[g]}
+          matches={matches}
+          bestOf={t.bestOf}
+          name={name}
+          qualified={new Set([...q].filter((id) => (t.groups[g] ?? []).includes(id)))}
+          onOpen={onOpen}
+        />
       ))}
-      {groups.length === 3 && (
-        <p className="text-xs text-muted md:col-span-2">В плей-офф выходят победители групп и лучший из вторых мест.</p>
-      )}
-      <p className="text-xs text-muted md:col-span-2">
-        Места: победы → разница геймов → выигранные геймы → порядок в списке группы.
+      <p className="text-xs text-muted">
+        Нажмите на клетку, чтобы открыть матч. Места: победы → разница сетов → разница геймов → выигранные геймы → порядок в
+        списке группы.
+        {t.playoffSize >= 2 && ` В плей-офф выходят ${t.playoffSize}: сначала первые места групп, затем лучшие из следующих.`}
       </p>
     </div>
   );
 }
 
-function MatchesTab({ t, name, editable }: { t: Tournament; name: NameFn; editable: boolean }) {
+function MatchesTab({ t, name, onOpen }: { t: Tournament; name: NameFn; onOpen: (id: string) => void }) {
   const matches = sortedMatches(t);
   const groups = activeGroups(t);
-  const played = matches.filter(isPlayed).length;
+  const played = matches.filter((m) => matchState(m.sets, t.bestOf).complete).length;
   return (
     <div>
       <p className="text-sm text-muted mb-3">
-        Сыграно {played} из {matches.length}
-        {editable && ' · введите геймы и нажмите Enter или перейдите к следующему полю'}
+        Сыграно {played} из {matches.length} · нажмите на матч, чтобы {t.status === 'groups' ? 'открыть или ввести счёт' : 'открыть'}
       </p>
       <div className="grid gap-4 md:grid-cols-2">
         {groups.map((g) => (
-          <div key={g} className="card px-4 py-1">
-            <h3 className="font-display font-bold text-court-700 pt-3 pb-1">Группа {g}</h3>
+          <div key={g} className="card px-2 py-1">
+            <h3 className="font-display font-bold text-court-700 pt-3 pb-1 px-2">Группа {g}</h3>
             {matches
               .filter((m) => m.group === g)
               .map((m) => (
-                <MatchRow
+                <button
                   key={m.id}
-                  p1={m.p1}
-                  p2={m.p2}
-                  name={name}
-                  score={m}
-                  editable={editable}
-                  onSave={(g1, g2) => api.setGroupScore(t.id, m.id, g1, g2)}
-                />
+                  onClick={() => onOpen(m.id)}
+                  className="w-full text-left rounded-xl px-2 py-2 border-b border-line last:border-0 hover:bg-court-50 transition"
+                >
+                  <div className="flex justify-end mb-0.5">
+                    <StatusPill sets={m.sets} bestOf={t.bestOf} />
+                  </div>
+                  <MatchLines p1={m.p1} p2={m.p2} name={name} sets={m.sets} bestOf={t.bestOf} reserveSets />
+                </button>
               ))}
           </div>
         ))}
@@ -144,60 +206,24 @@ function MatchesTab({ t, name, editable }: { t: Tournament; name: NameFn; editab
   );
 }
 
-function PlayoffTab({ t, name, editable }: { t: Tournament; name: NameFn; editable: boolean }) {
+function PlayoffTab({ t, name, onOpen }: { t: Tournament; name: NameFn; onOpen: (id: string) => void }) {
   if (!t.playoff) {
-    const preview = seedSemifinals(t);
+    const preview = seedBracket(t);
+    const b = preview && resolveBracket({ playoff: preview, bestOf: t.bestOf });
     return (
-      <div className="card p-5">
-        <p className="text-muted text-sm mb-3">
-          Плей-офф начнётся после группового этапа.
-          {preview && ' Если всё останется как сейчас, пары полуфиналов будут такими:'}
-        </p>
-        {preview && (
-          <ul className="text-sm space-y-1">
-            <li>
-              {name(preview.SF1.p1)} — {name(preview.SF1.p2)}
-            </li>
-            <li>
-              {name(preview.SF2.p1)} — {name(preview.SF2.p2)}
-            </li>
-          </ul>
-        )}
+      <div>
+        <Notice>
+          Плей-офф начнётся после группового этапа. Ниже — сетка, какой она будет, если всё останется как сейчас.
+        </Notice>
+        {b ? <Bracket bracket={b} bestOf={t.bestOf} name={name} /> : <p className="text-muted text-sm">Недостаточно игроков для сетки.</p>}
       </div>
     );
   }
-  const p = resolvePlayoff(t.playoff);
-  const row = (slot: PlayoffSlot) => (
-    <MatchRow
-      p1={p[slot].p1}
-      p2={p[slot].p2}
-      name={name}
-      score={p[slot]}
-      editable={editable}
-      onSave={(g1, g2) => api.setPlayoffScore(t.id, slot, g1, g2)}
-    />
-  );
+  const b = resolveBracket(t)!;
   return (
-    <div className="grid gap-4 md:grid-cols-[1fr_1fr] items-center">
-      <div className="space-y-4">
-        <Box title={PLAYOFF_LABELS.SF1}>{row('SF1')}</Box>
-        <Box title={PLAYOFF_LABELS.SF2}>{row('SF2')}</Box>
-      </div>
-      <div className="space-y-4">
-        <Box title="🏆 Финал" accent>
-          {row('FINAL')}
-        </Box>
-        <Box title={PLAYOFF_LABELS.THIRD}>{row('THIRD')}</Box>
-      </div>
-    </div>
-  );
-}
-
-function Box({ title, children, accent }: { title: string; children: ReactNode; accent?: boolean }) {
-  return (
-    <div className={`card px-4 py-1 ${accent ? 'border-court-500 border-2' : ''}`}>
-      <div className="text-[11px] font-bold uppercase tracking-wider text-muted pt-3">{title}</div>
-      {children}
+    <div>
+      <p className="text-sm text-muted mb-3">Нажмите на матч, чтобы открыть его{t.status === 'playoff' ? ' или ввести счёт' : ''}.</p>
+      <Bracket bracket={b} bestOf={t.bestOf} name={name} onOpen={onOpen} />
     </div>
   );
 }
@@ -209,13 +235,14 @@ function ResultsTab({ t, name }: { t: Tournament; name: NameFn }) {
   return (
     <div>
       {!done && <Notice>Турнир ещё идёт — места предварительные. Очки рейтинга начисляются после завершения.</Notice>}
-      <div className="card overflow-hidden">
+      <div className="card overflow-x-auto">
         <table className="w-full text-sm tabular-nums">
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-muted bg-court-50">
-              <th className="text-left font-semibold pl-4 pr-3 py-2 w-20">Место</th>
+              <th className="text-left font-semibold pl-4 pr-3 py-2 w-16">Место</th>
               <th className="text-left font-semibold py-2">Игрок</th>
-              <th className="font-semibold px-2" title="Победы–поражения за весь турнир">В–П</th>
+              <th className="font-semibold px-2" title="Победы – поражения за весь турнир">Матчи</th>
+              <th className="font-semibold px-2">Сеты</th>
               <th className="font-semibold px-2">Геймы</th>
               <th className="font-semibold px-2 pr-4">Очки</th>
             </tr>
@@ -225,19 +252,20 @@ function ResultsTab({ t, name }: { t: Tournament; name: NameFn }) {
               const r = playerRecord(t, pl.playerId);
               return (
                 <tr key={pl.playerId} className="border-t border-line">
-                  <td className="pl-4 py-2.5 font-bold">
-                    {done && pl.place <= 3 ? medal[pl.place - 1] : pl.place}
-                  </td>
-                  <td className="py-2.5 font-semibold">
+                  <td className="pl-4 py-2.5 font-bold">{done && pl.place <= 3 ? medal[pl.place - 1] : pl.place}</td>
+                  <td className="py-2.5 font-semibold whitespace-nowrap">
                     <Link to={`/players/${pl.playerId}`} className="hover:underline">
                       {name(pl.playerId)}
                     </Link>
                   </td>
-                  <td className="text-center px-2">
-                    {r.wins}–{r.losses}
+                  <td className="text-center px-2 whitespace-nowrap">
+                    {r.wins} – {r.losses}
                   </td>
-                  <td className="text-center px-2">
-                    {r.gamesFor}–{r.gamesAgainst}
+                  <td className="text-center px-2 whitespace-nowrap">
+                    {r.setsFor} – {r.setsAgainst}
+                  </td>
+                  <td className="text-center px-2 whitespace-nowrap">
+                    {r.gamesFor} – {r.gamesAgainst}
                   </td>
                   <td className="text-center px-2 pr-4 font-bold text-court-700">{done ? pointsForPlace(pl.place) : '—'}</td>
                 </tr>
@@ -250,17 +278,16 @@ function ResultsTab({ t, name }: { t: Tournament; name: NameFn }) {
   );
 }
 
-// ── Управление турниром ─────────────────────────────────────────
+// ── Управление турниром ─────────────────────────────────────
 function AdminPanel({ t }: { t: Tournament }) {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [editing, setEditing] = useState(false);
-  const groups = activeGroups(t);
-  const hasPlayoff = groups.length >= 2;
+  const hasPlayoff = t.playoffSize >= 2;
   const groupsDone = allGroupMatchesPlayed(t);
-  const playoffDone =
-    t.playoff != null && (['SF1', 'SF2', 'THIRD', 'FINAL'] as const).every((s) => isPlayed(resolvePlayoff(t.playoff!)[s]));
+  const b = resolveBracket(t);
+  const playoffDone = b ? bracketDone(b) : false;
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -286,12 +313,11 @@ function AdminPanel({ t }: { t: Tournament }) {
             <button
               className="btn btn-primary"
               disabled={busy || !groupsDone}
-              title={groupsDone ? '' : 'Сначала введите счёт всех групповых матчей'}
               onClick={() =>
                 run(async () => {
-                  const sf = seedSemifinals(t);
-                  if (!sf) throw new Error('Не удалось построить сетку');
-                  await api.startPlayoff(t.id, sf);
+                  const p = seedBracket(t);
+                  if (!p) throw new Error('Не удалось построить сетку');
+                  await api.startPlayoff(t.id, p);
                 })
               }
             >
@@ -312,7 +338,7 @@ function AdminPanel({ t }: { t: Tournament }) {
                 className="btn btn-ghost"
                 disabled={busy}
                 onClick={() =>
-                  confirm('Отменить плей-офф? Счёт полуфиналов и финала будет удалён, групповой этап снова станет редактируемым.') &&
+                  confirm('Отменить плей-офф? Весь счёт сетки будет удалён, групповой этап снова станет редактируемым.') &&
                   run(() => api.cancelPlayoff(t.id))
                 }
               >
@@ -321,16 +347,12 @@ function AdminPanel({ t }: { t: Tournament }) {
             </>
           )}
           {t.status === 'finished' && (
-            <button
-              className="btn btn-ghost"
-              disabled={busy}
-              onClick={() => run(() => api.setStatus(t.id, t.playoff ? 'playoff' : 'groups'))}
-            >
+            <button className="btn btn-ghost" disabled={busy} onClick={() => run(() => api.setStatus(t.id, t.playoff ? 'playoff' : 'groups'))}>
               Открыть для исправлений
             </button>
           )}
           <button className="btn btn-ghost" onClick={() => setEditing(true)}>
-            Название и дата
+            Настройки
           </button>
           <button
             className="btn btn-danger ml-auto"
@@ -347,11 +369,13 @@ function AdminPanel({ t }: { t: Tournament }) {
           </button>
         </div>
       )}
-      {t.status === 'groups' && hasPlayoff && !groupsDone && !editing && (
-        <p className="text-xs text-muted mt-2">«Начать плей-офф» станет доступно, когда будет введён счёт всех групповых матчей.</p>
+      {!editing && t.status === 'groups' && !groupsDone && (
+        <p className="text-xs text-muted mt-2">
+          {hasPlayoff ? '«Начать плей-офф»' : '«Завершить турнир»'} станет доступно, когда будут доиграны все матчи групп.
+        </p>
       )}
-      {t.status === 'playoff' && !playoffDone && !editing && (
-        <p className="text-xs text-muted mt-2">Завершить турнир можно после финала и матча за 3 место.</p>
+      {!editing && t.status === 'playoff' && !playoffDone && (
+        <p className="text-xs text-muted mt-2">Завершить турнир можно после финала{b?.third ? ' и матча за 3 место' : ''}.</p>
       )}
       {err && <p className="text-sm text-clay-600 mt-2">{err}</p>}
     </div>
@@ -362,30 +386,68 @@ function EditInfo({ t, onDone }: { t: Tournament; onDone: () => void }) {
   const [name, setName] = useState(t.name);
   const [date, setDate] = useState(t.date);
   const [season, setSeason] = useState(t.season);
+  const [bestOf, setBestOf] = useState<BestOf>(t.bestOf);
+  const [playoffSize, setPlayoffSize] = useState(t.playoffSize);
+  const [thirdPlace, setThirdPlace] = useState(t.thirdPlace);
   const [busy, setBusy] = useState(false);
+  const total = tournamentPlayerIds(t).length;
+  const anyScore = Object.values(t.matches).some((m) => m.sets.length > 0);
+  const canChangePlayoff = t.status === 'groups';
+
   return (
     <form
-      className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr_auto] items-end"
+      className="grid gap-3"
       onSubmit={async (e) => {
         e.preventDefault();
         setBusy(true);
-        await api.updateTournamentInfo(t.id, { name: name.trim(), date, season: season.trim() });
+        await api.updateTournamentInfo(t.id, {
+          name: name.trim(),
+          date,
+          season: season.trim(),
+          ...(anyScore ? {} : { bestOf }),
+          ...(canChangePlayoff ? { playoffSize, thirdPlace } : {}),
+        });
         setBusy(false);
         onDone();
       }}
     >
-      <label>
-        <span className="label">Название</span>
-        <input className="field" value={name} onChange={(e) => setName(e.target.value)} required />
-      </label>
-      <label>
-        <span className="label">Дата</span>
-        <input className="field" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-      </label>
-      <label>
-        <span className="label">Сезон</span>
-        <input className="field" value={season} onChange={(e) => setSeason(e.target.value)} required />
-      </label>
+      <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr]">
+        <Field label="Название">
+          <input className="field" value={name} onChange={(e) => setName(e.target.value)} required />
+        </Field>
+        <Field label="Дата">
+          <input className="field" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </Field>
+        <Field label="Сезон">
+          <input className="field" value={season} onChange={(e) => setSeason(e.target.value)} required />
+        </Field>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3 items-end">
+        <Field label="Формат матча">
+          <select className="field" value={bestOf} disabled={anyScore} onChange={(e) => setBestOf(Number(e.target.value) as BestOf)}>
+            <option value={1}>{BEST_OF_LABEL[1]}</option>
+            <option value={3}>{BEST_OF_LABEL[3]}</option>
+          </select>
+        </Field>
+        <Field label="В плей-офф выходят">
+          <PlayoffSizeSelect value={playoffSize} max={total} disabled={!canChangePlayoff} onChange={setPlayoffSize} />
+        </Field>
+        <label className="flex items-center gap-2 text-sm pb-2.5">
+          <input
+            type="checkbox"
+            checked={thirdPlace}
+            disabled={!canChangePlayoff || playoffSize < 4}
+            onChange={(e) => setThirdPlace(e.target.checked)}
+          />
+          Матч за 3 место
+        </label>
+      </div>
+      {(anyScore || !canChangePlayoff) && (
+        <p className="text-xs text-muted">
+          {anyScore && 'Формат матча нельзя поменять, когда уже введён счёт. '}
+          {!canChangePlayoff && 'Настройки плей-офф меняются только до его начала.'}
+        </p>
+      )}
       <div className="flex gap-2">
         <button className="btn btn-primary" disabled={busy}>
           Сохранить
@@ -395,5 +457,14 @@ function EditInfo({ t, onDone }: { t: Tournament; onDone: () => void }) {
         </button>
       </div>
     </form>
+  );
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="label">{label}</span>
+      {children}
+    </label>
   );
 }

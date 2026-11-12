@@ -2,10 +2,14 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import * as api from '../api';
 import { useData } from '../hooks/data';
-import { GROUP_KEYS, type GroupKey } from '../types';
+import PlayoffSizeSelect from '../components/PlayoffSizeSelect';
+import { BEST_OF_LABEL } from '../lib/score';
+import { GROUP_KEYS, type BestOf, type GroupKey } from '../types';
 
 const MIN_PER_GROUP = 2;
-const MAX_PER_GROUP = 6;
+const MAX_PER_GROUP = 8;
+/** по умолчанию: 1 группа — без плей-офф, 2–3 группы — 4 игрока, 4 группы — 8 */
+const DEFAULT_PLAYOFF: Record<number, number> = { 1: 0, 2: 4, 3: 4, 4: 8 };
 
 function today() {
   const d = new Date();
@@ -21,8 +25,11 @@ export default function NewTournament() {
   const [date, setDate] = useState(today());
   const [season, setSeason] = useState(lastSeason ?? String(new Date().getFullYear()));
   const [groupCount, setGroupCount] = useState(2);
-  const [groups, setGroups] = useState<Record<GroupKey, string[]>>({ A: [], B: [], C: [] });
-  const [newNames, setNewNames] = useState<Record<GroupKey, string>>({ A: '', B: '', C: '' });
+  const [groups, setGroups] = useState<Record<GroupKey, string[]>>({ A: [], B: [], C: [], D: [] });
+  const [newNames, setNewNames] = useState<Record<GroupKey, string>>({ A: '', B: '', C: '', D: '' });
+  const [bestOf, setBestOf] = useState<BestOf>(3);
+  const [playoffSize, setPlayoffSize] = useState(DEFAULT_PLAYOFF[2]);
+  const [thirdPlace, setThirdPlace] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -62,7 +69,7 @@ export default function NewTournament() {
       const j = Math.floor(Math.random() * (i + 1));
       [all[i], all[j]] = [all[j], all[i]];
     }
-    const next: Record<GroupKey, string[]> = { A: [], B: [], C: [] };
+    const next: Record<GroupKey, string[]> = { A: [], B: [], C: [], D: [] };
     all.forEach((id, i) => next[active[i % active.length]].push(id));
     setGroups(next);
   }
@@ -73,6 +80,7 @@ export default function NewTournament() {
     if (n < MIN_PER_GROUP) problems.push(`В группе ${g} нужно минимум ${MIN_PER_GROUP} игрока`);
     if (n > MAX_PER_GROUP) problems.push(`В группе ${g} не больше ${MAX_PER_GROUP} игроков`);
   }
+  if (playoffSize > chosen.size && chosen.size > 0) problems.push(`В плей-офф выходят ${playoffSize}, а игроков всего ${chosen.size}`);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -83,7 +91,16 @@ export default function NewTournament() {
       const g: Partial<Record<GroupKey, string[]>> = {};
       for (const k of active) g[k] = groups[k];
       const playerNames = Object.fromEntries([...chosen].map((id) => [id, nameOf(id)]));
-      const id = await api.createTournament({ name: name || `Турнир ${date}`, date, season, groups: g, playerNames });
+      const id = await api.createTournament({
+        name: name || `Турнир ${date}`,
+        date,
+        season,
+        bestOf,
+        playoffSize,
+        thirdPlace: thirdPlace && playoffSize >= 4,
+        groups: g,
+        playerNames,
+      });
       navigate(`/t/${id}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -116,22 +133,43 @@ export default function NewTournament() {
       <div className="card p-4 mb-4">
         <span className="label">Количество групп</span>
         <div className="flex flex-wrap items-center gap-2">
-          {[1, 2, 3].map((n) => (
+          {[1, 2, 3, 4].map((n) => (
             <button
               type="button"
               key={n}
-              onClick={() => setGroupCount(n)}
+              onClick={() => {
+                setGroupCount(n);
+                setPlayoffSize(DEFAULT_PLAYOFF[n]);
+              }}
               className={`btn ${groupCount === n ? 'btn-primary' : 'btn-ghost'}`}
             >
               {n}
             </button>
           ))}
-          <span className="text-xs text-muted ml-2">
-            {groupCount === 1 && 'Круговой турнир без плей-офф'}
-            {groupCount === 2 && 'В полуфинал выходят по двое из группы: A1–B2, B1–A2'}
-            {groupCount === 3 && 'В полуфинал выходят победители групп и лучший второй'}
-          </span>
+
         </div>
+      </div>
+
+      <div className="card p-4 mb-4 grid gap-4 sm:grid-cols-3 items-end">
+        <label className="block">
+          <span className="label">Формат матча</span>
+          <select className="field" value={bestOf} onChange={(e) => setBestOf(Number(e.target.value) as BestOf)}>
+            <option value={3}>{BEST_OF_LABEL[3]}</option>
+            <option value={1}>{BEST_OF_LABEL[1]}</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="label">В плей-офф выходят</span>
+          <PlayoffSizeSelect value={playoffSize} max={Math.max(chosen.size, 16)} onChange={setPlayoffSize} />
+        </label>
+        <label className="flex items-center gap-2 text-sm pb-2.5">
+          <input type="checkbox" checked={thirdPlace && playoffSize >= 4} disabled={playoffSize < 4} onChange={(e) => setThirdPlace(e.target.checked)} />
+          Матч за 3 место
+        </label>
+        <p className="text-xs text-muted sm:col-span-3 -mt-1">
+          В плей-офф сначала выходят победители групп, затем лучшие из вторых мест и т.д. Игроки одной группы разводятся по сетке,
+          чтобы встретиться как можно позже. Если число не 2, 4, 8 или 16 — сильнейшие получают BYE (проходят в следующий круг без игры).
+        </p>
       </div>
 
       <div className="flex items-center justify-between mb-2">
@@ -143,7 +181,7 @@ export default function NewTournament() {
         )}
       </div>
 
-      <div className={`grid gap-4 mb-5 ${groupCount === 3 ? 'md:grid-cols-3' : groupCount === 2 ? 'md:grid-cols-2' : ''}`}>
+      <div className={`grid gap-4 mb-5 ${groupCount === 4 ? 'md:grid-cols-2 lg:grid-cols-4' : groupCount === 3 ? 'md:grid-cols-3' : groupCount === 2 ? 'md:grid-cols-2' : ''}`}>
         {active.map((g) => (
           <div key={g} className="card p-4">
             <div className="flex items-center justify-between mb-2">
